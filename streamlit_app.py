@@ -30,7 +30,6 @@ def get_current_weather(city: str) -> dict:
     Args:
         city: The name of the city to look up weather data for.
     """
-    # Using a neat status box inside the tool run so users see execution live
     with st.status(f"🔧 Agent running backend tool for '{city}'...", expanded=False) as status:
         try:
             # Using OpenStreetMap's Nominatim API to find coordinates
@@ -102,6 +101,12 @@ if user_prompt:
         # 1. Rebuild the persistent API history structure
         api_history = []
         for msg in st.session_state.messages[:-1]:  # Exclude the prompt we just typed
+            
+            # FIXED: Gemini strictly requires chat history to begin with a 'user' message.
+            # We skip the initial UI greeting to prevent a structure crash.
+            if msg["role"] == "assistant" and "Hi! Tell me where" in msg["content"]:
+                continue
+                
             api_role = "model" if msg["role"] == "assistant" else "user"
             api_history.append(
                 types.Content(role=api_role, parts=[types.Part.from_text(text=msg["content"])])
@@ -109,7 +114,6 @@ if user_prompt:
             
         with st.spinner("Stylist is consulting atmospheric records..."):
             # 2. Create an official stateful ChatSession using the SDK
-            # The client.chats system handles internal tool payloads automatically!
             chat = client.chats.create(
                 model="gemini-2.5-flash",
                 config=config,
