@@ -92,21 +92,50 @@ if user_prompt:
         # Create a container so we can stream thoughts dynamically
         response_placeholder = st.empty()
         
-        # Start chat chain
-        chat = client.chats.create(model="gemini-2.5-flash", config=config)
-        response = chat.send_message(user_prompt)
+        # 1. FIXED: Convert your chat history to a structural contents list Gemini understands
+        formatted_contents = []
+        for msg in st.session_state.messages:
+            formatted_contents.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
+            
+        # 2. FIXED: Use the cleaner models.generate_content endpoint
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=formatted_contents,
+            config=config
+        )
         
         # Run our autonomous tool calling execution engine loop
         while response.function_calls:
+            # Display a quick visual indicator to the user that a tool is firing
+            st.toast("🤖 Agent is checking real-time conditions...")
+            
+            # Record that the model requested a function call in our tracking history
+            formatted_contents.append(response.candidates[0].content)
+            
             function_responses = []
             for call in response.function_calls:
                 if call.name in TOOL_MAP:
+                    # Execute your Python weather function
                     tool_result = TOOL_MAP[call.name](**call.args)
+                    
+                    # Package the result back into the format Google requires
                     function_responses.append(
-                        types.Part.from_function_response(name=call.name, response={"result": tool_result})
+                        types.Part.from_function_response(
+                            name=call.name, 
+                            response={"result": tool_result}
+                        )
                     )
-            response = chat.send_message(function_responses)
             
-        # Display the final synthesized text result
+            # Append the completed tool data to the historical log
+            formatted_contents.append(types.Content(role="tool", parts=function_responses))
+            
+            # Send the data back to Gemini to synthesize the final answer
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=formatted_contents,
+                config=config
+            )
+            
+        # Display the final synthesized wardrobe text result
         response_placeholder.markdown(response.text)
         st.session_state.messages.append({"role": "assistant", "content": response.text})
