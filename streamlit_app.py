@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 from google import genai
-from google.genai import types  # FIXED: Imported types for configurations
+from google.genai import types
 
 # ---------------------------------------------------------------------------
 # 1. Streamlit UI Layout Configuration
@@ -25,48 +25,51 @@ for msg in st.session_state.messages:
 # 2. Define the Agent Tools
 # ---------------------------------------------------------------------------
 def get_current_weather(city: str) -> dict:
-    """Fetches the current temperature and weather conditions for a given city."""
-    with st.spinner(f"🔧 Agent executing tool: Fetching live weather for {city}..."):
-        try:
-            # Using OpenStreetMap's Nominatim API to find even the smallest towns
-            headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
-            geo_url = f"https://nominatim.openstreetmap.org/search?q={city}&format=json&limit=1"
+    """Fetches the current temperature and weather conditions for a given city.
+    
+    Args:
+        city: The name of the city to look up weather data for.
+    """
+    # Use a toast notification instead of st.spinner inside a background thread loop
+    st.toast(f"🔧 Agent executing tool: Fetching live weather for {city}...")
+    try:
+        # Using OpenStreetMap's Nominatim API to find coordinates
+        headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
+        geo_url = f"https://nominatim.openstreetmap.org/search?q={city}&format=json&limit=1"
+        
+        geo_response = requests.get(geo_url, headers=headers)
+        if geo_response.status_code != 200:
+            return {"error": "Failed to connect to geolocation service."}
             
-            geo_response = requests.get(geo_url, headers=headers)
-            if geo_response.status_code != 200:  # FIXED: Changed status_with to status_code
-                return {"error": "Failed to connect to geolocation service."}
-                
-            geo_res = geo_response.json()
-            if not geo_res:
-                return {"error": f"Could not find coordinates for {city}"}
-            
-            # Convert latitude and longitude strings to floats
-            lat = float(geo_res[0]["lat"])
-            lon = float(geo_res[0]["lon"])
-            
-            # Open-Meteo weather request
-            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
-            weather_res = requests.get(weather_url).json()
-            
-            current = weather_res.get("current", {})
-            temp = current.get("temperature_2m")
-            code = current.get("weather_code", 0)
-            
-            desc = "Clear"
-            if code in [1, 2, 3]: desc = "Partly Cloudy"
-            elif code in [45, 48]: desc = "Foggy"
-            elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: desc = "Raining"
-            elif code in [71, 73, 75, 77, 85, 86]: desc = "Snowing"
-            elif code in [95, 96, 99]: desc = "Thunderstorm"
+        geo_res = geo_response.json()
+        if not geo_res:
+            return {"error": f"Could not find coordinates for {city}"}
+        
+        # Convert latitude and longitude strings to floats
+        lat = float(geo_res[0]["lat"])
+        lon = float(geo_res[0]["lon"])
+        
+        # Open-Meteo weather request
+        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
+        weather_res = requests.get(weather_url).json()
+        
+        current = weather_res.get("current", {})
+        temp = current.get("temperature_2m")
+        code = current.get("weather_code", 0)
+        
+        desc = "Clear"
+        if code in [1, 2, 3]: desc = "Partly Cloudy"
+        elif code in [45, 48]: desc = "Foggy"
+        elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: desc = "Raining"
+        elif code in [71, 73, 75, 77, 85, 86]: desc = "Snowing"
+        elif code in [95, 96, 99]: desc = "Thunderstorm"
 
-            return {"city": city, "temperature_f": temp, "condition": desc}
-        except Exception as e:
-            return {"error": f"Weather lookup failed: {str(e)}"}
-
-TOOL_MAP = {"get_current_weather": get_current_weather}
+        return {"city": city, "temperature_f": temp, "condition": desc}
+    except Exception as e:
+        return {"error": f"Weather lookup failed: {str(e)}"}
 
 # ---------------------------------------------------------------------------
-# 3. Autonomous Execution & Interactivity Loop
+# 3. Execution & Interactivity Loop
 # ---------------------------------------------------------------------------
 user_prompt = st.chat_input("Where are you going?")
 
@@ -76,66 +79,38 @@ if user_prompt:
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
-    # FIXED: Indented all initialization inside the active chat block
+    # Initialize Gemini Client (pulls directly from Streamlit cloud secrets)
     client = genai.Client()
     
+    # Configure tools natively as Python functions
     config = types.GenerateContentConfig(
         system_instruction=(
             "You are a luxury personal wardrobe stylist agent. You MUST check the weather first using get_current_weather "
             "before finalizing your response. Provide an inspiring, structured clothing checklist based on the data."
         ),
-        tools=list(TOOL_MAP.values()),
+        tools=[get_current_weather],
         temperature=0.3
     )
 
     with st.chat_message("assistant"):
-        # Create a container so we can stream thoughts dynamically
         response_placeholder = st.empty()
         
-        # 1. FIXED: Convert your chat history to a structural contents list Gemini understands
+        # Reconstruct clean conversation history structure
         formatted_contents = []
         for msg in st.session_state.messages:
-            formatted_contents.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
+            api_role = "model" if msg["role"] == "assistant" else "user"
+            formatted_contents.append(
+                types.Content(role=api_role, parts=[types.Part.from_text(text=msg["content"])])
+            )
             
-        # 2. FIXED: Use the cleaner models.generate_content endpoint
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=formatted_contents,
-            config=config
-        )
-        
-        # Run our autonomous tool calling execution engine loop
-        while response.function_calls:
-            # Display a quick visual indicator to the user that a tool is firing
-            st.toast("🤖 Agent is checking real-time conditions...")
-            
-            # Record that the model requested a function call in our tracking history
-            formatted_contents.append(response.candidates[0].content)
-            
-            function_responses = []
-            for call in response.function_calls:
-                if call.name in TOOL_MAP:
-                    # Execute your Python weather function
-                    tool_result = TOOL_MAP[call.name](**call.args)
-                    
-                    # Package the result back into the format Google requires
-                    function_responses.append(
-                        types.Part.from_function_response(
-                            name=call.name, 
-                            response={"result": tool_result}
-                        )
-                    )
-            
-            # Append the completed tool data to the historical log
-            formatted_contents.append(types.Content(role="tool", parts=function_responses))
-            
-            # Send the data back to Gemini to synthesize the final answer
+        with st.spinner("Stylist is conceptualizing your layout..."):
+            # The SDK handles the entire back-and-forth tool cycle natively here
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=formatted_contents,
                 config=config
             )
             
-        # Display the final synthesized wardrobe text result
+        # Display the final synthesized text result natively
         response_placeholder.markdown(response.text)
         st.session_state.messages.append({"role": "assistant", "content": response.text})
