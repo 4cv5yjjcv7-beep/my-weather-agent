@@ -1,11 +1,7 @@
 import streamlit as st
 import requests
-
-# 1. Force Python to import the correct underlying module name
-import google_genai 
-from google.genai import Client
 from google import genai
-from google.genai import types
+from google.genai import types  # FIXED: Imported types for configurations
 
 # ---------------------------------------------------------------------------
 # 1. Streamlit UI Layout Configuration
@@ -32,19 +28,23 @@ def get_current_weather(city: str) -> dict:
     """Fetches the current temperature and weather conditions for a given city."""
     with st.spinner(f"🔧 Agent executing tool: Fetching live weather for {city}..."):
         try:
-            # UPGRADE: Using OpenStreetMap's Nominatim API to find even the smallest towns
+            # Using OpenStreetMap's Nominatim API to find even the smallest towns
             headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
             geo_url = f"https://nominatim.openstreetmap.org/search?q={city}&format=json&limit=1"
-            geo_res = requests.get(geo_url, headers=headers).json()
             
+            geo_response = requests.get(geo_url, headers=headers)
+            if geo_response.status_code != 200:  # FIXED: Changed status_with to status_code
+                return {"error": "Failed to connect to geolocation service."}
+                
+            geo_res = geo_response.json()
             if not geo_res:
                 return {"error": f"Could not find coordinates for {city}"}
             
-            # OpenStreetMap passes latitude and longitude back as strings, so we convert them to floats
+            # Convert latitude and longitude strings to floats
             lat = float(geo_res[0]["lat"])
             lon = float(geo_res[0]["lon"])
             
-            # The rest of your Open-Meteo weather request stays exactly the same!
+            # Open-Meteo weather request
             weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
             weather_res = requests.get(weather_url).json()
             
@@ -76,7 +76,7 @@ if user_prompt:
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
-    # Initialize Gemini Client (will pull directly from Streamlit cloud secrets)
+    # FIXED: Indented all initialization inside the active chat block
     client = genai.Client()
     
     config = types.GenerateContentConfig(
