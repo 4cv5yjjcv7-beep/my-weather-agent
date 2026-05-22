@@ -24,44 +24,46 @@ for msg in st.session_state.messages:
 # 2. Define the Agent Tools
 # ---------------------------------------------------------------------------
 def get_current_weather(city: str) -> str:
-    """Fetches the current temperature and weather conditions for a given city."""
-    with st.status(f"🔧 Agent running backend tool for '{city}'...", expanded=False) as status:
+    """Fetches the current temperature and weather conditions for a given US city."""
+    with st.status(f"🔧 Agent running NWS backend tool for '{city}'...", expanded=False) as status:
         try:
-            # THE FIX: Slice off commas and state abbreviations so the geocoder understands the query
             clean_city = city.split(",")[0].strip()
             
-            # Use Open-Meteo's Geocoding API
+            # 1. Geocoding (Open-Meteo is still the best free geocoder to get latitude/longitude)
             geo_url = "https://geocoding-api.open-meteo.com/v1/search"
             params = {"name": clean_city, "count": 1, "language": "en", "format": "json"}
             
             geo_response = requests.get(geo_url, params=params)
-            if geo_response.status_code != 200:
-                status.update(label="❌ Geolocation connection failed", state="error")
-                return "Failed to connect to geolocation service."
-                
-            geo_res = geo_response.json()
-            results = geo_res.get("results")
-            if not results:
+            if geo_response.status_code != 200 or not geo_response.json().get("results"):
                 status.update(label=f"❌ Location '{clean_city}' not found", state="error")
                 return f"Could not find coordinates for {city}"
             
-            lat = float(results[0]["latitude"])
-            lon = float(results[0]["longitude"])
+            # NWS prefers coordinates rounded to 4 decimal places
+            lat = round(float(geo_response.json()["results"][0]["latitude"]), 4)
+            lon = round(float(geo_response.json()["results"][0]["longitude"]), 4)
             
-            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
-            weather_res = requests.get(weather_url).json()
+            # 2. National Weather Service (NWS) Points API
+            headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
+            points_url = f"https://api.weather.gov/points/{lat},{lon}"
+            points_response = requests.get(points_url, headers=headers)
             
-            temp = weather_res.get("current", {}).get("temperature_2m")
-            code = weather_res.get("current", {}).get("weather_code", 0)
+            if points_response.status_code != 200:
+                status.update(label="❌ NWS Data unavailable (US only)", state="error")
+                return f"Could not pull NWS weather for {city}. Is it outside the US?"
+                
+            points_data = points_response.json()
+            forecast_url = points_data["properties"]["forecastHourly"]
             
-            desc = "Clear"
-            if code in [1, 2, 3]: desc = "Partly Cloudy"
-            elif code in [45, 48]: desc = "Foggy"
-            elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: desc = "Raining"
-            elif code in [71, 73, 75, 77, 85, 86]: desc = "Snowing"
-            elif code in [95, 96, 99]: desc = "Thunderstorm"
+            # 3. National Weather Service Hourly Forecast
+            forecast_response = requests.get(forecast_url, headers=headers).json()
+            
+            # The 0th period is always the current, active hour
+            current_hour = forecast_response["properties"]["periods"][0]
+            
+            temp = current_hour["temperature"]
+            desc = current_hour["shortForecast"]
 
-            status.update(label=f"✅ Data fetched: {temp}°F, {desc}", state="complete")
+            status.update(label=f"✅ NWS Data fetched: {temp}°F, {desc}", state="complete")
             return f"Weather in {city}: {temp}°F, {desc}"
             
         except Exception as e:
