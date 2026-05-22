@@ -27,17 +27,21 @@ for msg in st.session_state.messages:
 # ---------------------------------------------------------------------------
 def get_current_weather(city: str) -> dict:
     """Fetches the current temperature and weather conditions for a given city."""
-    # Using a status expander so the user sees the tool executing live
     with st.spinner(f"🔧 Agent executing tool: Fetching live weather for {city}..."):
         try:
-            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=en&format=json"
-            geo_res = requests.get(geo_url).json()
-            if not geo_res.get("results"):
+            # UPGRADE: Using OpenStreetMap's Nominatim API to find even the smallest towns
+            headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
+            geo_url = f"https://nominatim.openstreetmap.org/search?q={city}&format=json&limit=1"
+            geo_res = requests.get(geo_url, headers=headers).json()
+            
+            if not geo_res:
                 return {"error": f"Could not find coordinates for {city}"}
             
-            lat = geo_res["results"][0]["latitude"]
-            lon = geo_res["results"][0]["longitude"]
+            # OpenStreetMap passes latitude and longitude back as strings, so we convert them to floats
+            lat = float(geo_res[0]["lat"])
+            lon = float(geo_res[0]["lon"])
             
+            # The rest of your Open-Meteo weather request stays exactly the same!
             weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
             weather_res = requests.get(weather_url).json()
             
