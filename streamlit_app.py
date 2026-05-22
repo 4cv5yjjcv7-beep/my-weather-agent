@@ -1,6 +1,9 @@
-import os
-import requests
 import streamlit as st
+import requests
+
+# 1. Force Python to import the correct underlying module name
+import google_genai 
+from google.genai import Client
 from google import genai
 from google.genai import types
 
