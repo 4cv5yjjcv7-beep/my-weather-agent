@@ -25,40 +25,48 @@ for msg in st.session_state.messages:
 # ---------------------------------------------------------------------------
 def get_current_weather(city: str) -> str:
     """Fetches the current temperature and weather conditions for a given city."""
-    try:
-        # Use Open-Meteo's Geocoding API which does not block cloud IPs
-        geo_url = "https://geocoding-api.open-meteo.com/v1/search"
-        params = {"name": city, "count": 1, "language": "en", "format": "json"}
-        
-        geo_response = requests.get(geo_url, params=params)
-        if geo_response.status_code != 200:
-            return "Failed to connect to geolocation service."
+    with st.status(f"🔧 Agent running backend tool for '{city}'...", expanded=False) as status:
+        try:
+            # THE FIX: Slice off commas and state abbreviations so the geocoder understands the query
+            clean_city = city.split(",")[0].strip()
             
-        geo_res = geo_response.json()
-        results = geo_res.get("results")
-        if not results:
-            return f"Could not find coordinates for {city}"
-        
-        lat = float(results[0]["latitude"])
-        lon = float(results[0]["longitude"])
-        
-        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
-        weather_res = requests.get(weather_url).json()
-        
-        temp = weather_res.get("current", {}).get("temperature_2m")
-        code = weather_res.get("current", {}).get("weather_code", 0)
-        
-        desc = "Clear"
-        if code in [1, 2, 3]: desc = "Partly Cloudy"
-        elif code in [45, 48]: desc = "Foggy"
-        elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: desc = "Raining"
-        elif code in [71, 73, 75, 77, 85, 86]: desc = "Snowing"
-        elif code in [95, 96, 99]: desc = "Thunderstorm"
+            # Use Open-Meteo's Geocoding API
+            geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+            params = {"name": clean_city, "count": 1, "language": "en", "format": "json"}
+            
+            geo_response = requests.get(geo_url, params=params)
+            if geo_response.status_code != 200:
+                status.update(label="❌ Geolocation connection failed", state="error")
+                return "Failed to connect to geolocation service."
+                
+            geo_res = geo_response.json()
+            results = geo_res.get("results")
+            if not results:
+                status.update(label=f"❌ Location '{clean_city}' not found", state="error")
+                return f"Could not find coordinates for {city}"
+            
+            lat = float(results[0]["latitude"])
+            lon = float(results[0]["longitude"])
+            
+            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
+            weather_res = requests.get(weather_url).json()
+            
+            temp = weather_res.get("current", {}).get("temperature_2m")
+            code = weather_res.get("current", {}).get("weather_code", 0)
+            
+            desc = "Clear"
+            if code in [1, 2, 3]: desc = "Partly Cloudy"
+            elif code in [45, 48]: desc = "Foggy"
+            elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: desc = "Raining"
+            elif code in [71, 73, 75, 77, 85, 86]: desc = "Snowing"
+            elif code in [95, 96, 99]: desc = "Thunderstorm"
 
-        return f"Weather in {city}: {temp}°F, {desc}"
-        
-    except Exception as e:
-        return f"Weather lookup failed: {str(e)}"
+            status.update(label=f"✅ Data fetched: {temp}°F, {desc}", state="complete")
+            return f"Weather in {city}: {temp}°F, {desc}"
+            
+        except Exception as e:
+            status.update(label="❌ Weather process crashed", state="error")
+            return f"Weather lookup failed: {str(e)}"
 
 TOOL_MAP = {"get_current_weather": get_current_weather}
 
