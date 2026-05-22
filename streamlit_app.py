@@ -8,7 +8,7 @@ from google.genai import types
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="AI Wardrobe Advisor", page_icon="🧥")
 st.title("🧥 Personal Wardrobe AI Agent")
-st.caption("Powered by Gemini 2.5 Flash & Manual Execution")
+st.caption("Powered by Gemini 2.0 Flash & Manual Execution")
 
 # Initialize Chat Message History
 if "messages" not in st.session_state:
@@ -107,14 +107,14 @@ if user_prompt:
                 
             with st.spinner("Stylist is consulting atmospheric records..."):
                 
-                # Send initial payload directly to the model (bypassing the buggy chat wrapper)
+                # Send initial payload directly to the model
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.0-flash",
                     contents=api_history,
                     config=config
                 )
                 
-                # THE FIX: Flawless Manual Loop that forces the tracking 'id'
+                # Manual Loop that forces the tracking 'id'
                 while response.function_calls:
                     
                     # 1. Append the model's function request
@@ -127,7 +127,7 @@ if user_prompt:
                             call_args = dict(call.args) if call.args else {}
                             tool_result = TOOL_MAP[call.name](**call_args)
                             
-                            # THE CRITICAL MISSING PIECE: We must safely pass call.id back to Google!
+                            # We safely pass call.id back to Google
                             kwargs = {
                                 "name": call.name, 
                                 "response": {"result": tool_result}
@@ -144,7 +144,7 @@ if user_prompt:
                     
                     # 4. Request the final synthesis from Gemini
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-2.0-flash",
                         contents=api_history,
                         config=config
                     )
@@ -153,9 +153,8 @@ if user_prompt:
             st.session_state.messages.append({"role": "assistant", "content": response.text})
 
     except Exception as e:
-        # If the API crashes, this violently bypasses Streamlit's redaction filter to show us why!
+        # If the API crashes, this bypasses Streamlit's redaction filter to show us why!
         error_info = str(e)
         if hasattr(e, 'response_json') and e.response_json:
-            error_info += f"\n\n**Raw Google Payload:**\n```json\n{e.response_json}\n
-```"
+            error_info += f"\n\n**Raw Google Payload:**\n```json\n{e.response_json}\n```"
         st.error(f"### 🛑 Google API Crash\n{error_info}")
