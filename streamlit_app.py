@@ -8,7 +8,7 @@ from google.genai import types
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="AI Wardrobe Advisor", page_icon="🧥")
 st.title("🧥 Personal Wardrobe AI Agent")
-st.caption("Powered by Gemini 2.0 & Native Tool Calling")
+st.caption("Powered by Gemini 2.5 Flash & Native Tool Calling")
 
 # Initialize Chat Message History
 if "messages" not in st.session_state:
@@ -23,50 +23,45 @@ for msg in st.session_state.messages:
 # ---------------------------------------------------------------------------
 # 2. Define the Agent Tools
 # ---------------------------------------------------------------------------
-def get_current_weather(city: str) -> dict:
+def get_current_weather(city: str) -> str:
     """Fetches the current temperature and weather conditions for a given city.
     
     Args:
         city: The name of the city, e.g. 'Herrin, IL'
     """
-    with st.status(f"🔧 Agent running backend tool for '{city}'...", expanded=False) as status:
-        try:
-            headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
-            geo_url = f"https://nominatim.openstreetmap.org/search?q={city}&format=json&limit=1"
+    try:
+        headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
+        geo_url = f"https://nominatim.openstreetmap.org/search?q={city}&format=json&limit=1"
+        
+        geo_response = requests.get(geo_url, headers=headers)
+        if geo_response.status_code != 200:
+            return "Failed to connect to geolocation service."
             
-            geo_response = requests.get(geo_url, headers=headers)
-            if geo_response.status_code != 200:
-                status.update(label="❌ Geolocation connection failed", state="error")
-                return {"error": "Failed to connect to geolocation service."}
-                
-            geo_res = geo_response.json()
-            if not geo_res:
-                status.update(label=f"❌ Location '{city}' not found", state="error")
-                return {"error": f"Could not find coordinates for {city}"}
-            
-            lat = float(geo_res[0]["lat"])
-            lon = float(geo_res[0]["lon"])
-            
-            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
-            weather_res = requests.get(weather_url).json()
-            
-            current = weather_res.get("current", {})
-            temp = current.get("temperature_2m")
-            code = current.get("weather_code", 0)
-            
-            desc = "Clear"
-            if code in [1, 2, 3]: desc = "Partly Cloudy"
-            elif code in [45, 48]: desc = "Foggy"
-            elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: desc = "Raining"
-            elif code in [71, 73, 75, 77, 85, 86]: desc = "Snowing"
-            elif code in [95, 96, 99]: desc = "Thunderstorm"
+        geo_res = geo_response.json()
+        if not geo_res:
+            return f"Could not find coordinates for {city}"
+        
+        lat = float(geo_res[0]["lat"])
+        lon = float(geo_res[0]["lon"])
+        
+        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&temperature_unit=fahrenheit"
+        weather_res = requests.get(weather_url).json()
+        
+        temp = weather_res.get("current", {}).get("temperature_2m")
+        code = weather_res.get("current", {}).get("weather_code", 0)
+        
+        desc = "Clear"
+        if code in [1, 2, 3]: desc = "Partly Cloudy"
+        elif code in [45, 48]: desc = "Foggy"
+        elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: desc = "Raining"
+        elif code in [71, 73, 75, 77, 85, 86]: desc = "Snowing"
+        elif code in [95, 96, 99]: desc = "Thunderstorm"
 
-            status.update(label=f"✅ Data fetched: {temp}°F, {desc}", state="complete")
-            return {"city": city, "temperature_f": temp, "condition": desc}
-            
-        except Exception as e:
-            status.update(label="❌ Weather process crashed", state="error")
-            return {"error": f"Weather lookup failed: {str(e)}"}
+        # Returning a clean string prevents the SDK from failing to serialize complex dictionaries
+        return f"Weather in {city}: {temp}°F, {desc}"
+        
+    except Exception as e:
+        return f"Weather lookup failed: {str(e)}"
 
 # ---------------------------------------------------------------------------
 # 3. Execution & Interactivity Loop
@@ -95,7 +90,6 @@ if user_prompt:
         # Build API history
         api_history = []
         for msg in st.session_state.messages[:-1]:
-            # Gemini strictly requires the history sequence to start with a 'user' role
             if msg["role"] == "assistant" and "Hi! Tell me where" in msg["content"]:
                 continue
             api_role = "model" if msg["role"] == "assistant" else "user"
@@ -103,16 +97,22 @@ if user_prompt:
                 types.Content(role=api_role, parts=[types.Part.from_text(text=msg["content"])])
             )
             
-        with st.spinner("Stylist is consulting atmospheric records..."):
+        with st.spinner("Agent is retrieving weather data and drafting your wardrobe..."):
             
-            # FIXED: Changed from 'gemini-2.5-flash' to the real 'gemini-2.0-flash'
-            chat = client.chats.create(
-                model="gemini-2.0-flash",
-                config=config,
-                history=api_history
-            )
+            # FIXED: If history is empty, omit the parameter entirely to prevent a 400 Bad Request
+            if len(api_history) == 0:
+                chat = client.chats.create(
+                    model="gemini-2.5-flash",
+                    config=config
+                )
+            else:
+                chat = client.chats.create(
+                    model="gemini-2.5-flash",
+                    config=config,
+                    history=api_history
+                )
             
-            # The SDK completely automates calling the Python function for us!
+            # The SDK automates calling the Python function and handling the return payload
             response = chat.send_message(user_prompt)
             
         response_placeholder.markdown(response.text)
