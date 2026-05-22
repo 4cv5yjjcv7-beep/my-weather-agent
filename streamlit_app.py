@@ -8,7 +8,7 @@ from google.genai import types
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="AI Wardrobe Advisor", page_icon="🧥")
 st.title("🧥 Personal Wardrobe AI Agent")
-st.caption("Powered by Gemini 2.0 Flash & Manual Execution")
+st.caption("Powered by Gemini 1.5 Flash & Manual Execution")
 
 # Initialize Chat Message History
 if "messages" not in st.session_state:
