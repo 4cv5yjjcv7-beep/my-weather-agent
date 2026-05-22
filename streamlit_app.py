@@ -144,7 +144,7 @@ if user_prompt:
                     
                     # 4. Request the final synthesis from Gemini
                     response = client.models.generate_content(
-                        model="gemini-2.0-flash",
+                        model="gemini-1.5-flash",
                         contents=api_history,
                         config=config
                     )
