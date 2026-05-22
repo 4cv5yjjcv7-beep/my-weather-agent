@@ -8,7 +8,7 @@ from google.genai import types
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="AI Wardrobe Advisor", page_icon="🧥")
 st.title("🧥 Personal Wardrobe AI Agent")
-st.caption("Powered by Gemini 2.5 & Manual Tool Execution")
+st.caption("Powered by Gemini 2.0 & Native Tool Calling")
 
 # Initialize Chat Message History
 if "messages" not in st.session_state:
@@ -21,10 +21,14 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # ---------------------------------------------------------------------------
-# 2. Define the Agent Tools & Schema
+# 2. Define the Agent Tools
 # ---------------------------------------------------------------------------
 def get_current_weather(city: str) -> dict:
-    """Fetches the current temperature and weather conditions for a given city."""
+    """Fetches the current temperature and weather conditions for a given city.
+    
+    Args:
+        city: The name of the city, e.g. 'Herrin, IL'
+    """
     with st.status(f"🔧 Agent running backend tool for '{city}'...", expanded=False) as status:
         try:
             headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
@@ -64,28 +68,6 @@ def get_current_weather(city: str) -> dict:
             status.update(label="❌ Weather process crashed", state="error")
             return {"error": f"Weather lookup failed: {str(e)}"}
 
-# FIXED: Define explicit JSON Schema for the tool to prevent SDK parsing crashes
-weather_tool = types.Tool(
-    function_declarations=[
-        types.FunctionDeclaration(
-            name="get_current_weather",
-            description="Fetches the current temperature and weather conditions for a given city.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "city": types.Schema(
-                        type="STRING",
-                        description="The city name, e.g. 'Herrin, IL'"
-                    )
-                },
-                required=["city"]
-            )
-        )
-    ]
-)
-
-TOOL_MAP = {"get_current_weather": get_current_weather}
-
 # ---------------------------------------------------------------------------
 # 3. Execution & Interactivity Loop
 # ---------------------------------------------------------------------------
@@ -103,16 +85,17 @@ if user_prompt:
             "You are a luxury personal wardrobe stylist agent. You MUST check the weather first using get_current_weather "
             "before finalizing your response. Provide an inspiring, structured clothing checklist based on the data."
         ),
-        tools=[weather_tool],
+        tools=[get_current_weather],
         temperature=0.3
     )
 
     with st.chat_message("assistant"):
         response_placeholder = st.empty()
         
-        # Build pristine API history using the standard models approach
+        # Build API history
         api_history = []
         for msg in st.session_state.messages[:-1]:
+            # Gemini strictly requires the history sequence to start with a 'user' role
             if msg["role"] == "assistant" and "Hi! Tell me where" in msg["content"]:
                 continue
             api_role = "model" if msg["role"] == "assistant" else "user"
@@ -120,50 +103,17 @@ if user_prompt:
                 types.Content(role=api_role, parts=[types.Part.from_text(text=msg["content"])])
             )
             
-        # Append the new prompt
-        api_history.append(
-            types.Content(role="user", parts=[types.Part.from_text(text=user_prompt)])
-        )
-            
         with st.spinner("Stylist is consulting atmospheric records..."):
             
-            # Send initial payload
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=api_history,
-                config=config
+            # FIXED: Changed from 'gemini-2.5-flash' to the real 'gemini-2.0-flash'
+            chat = client.chats.create(
+                model="gemini-2.0-flash",
+                config=config,
+                history=api_history
             )
             
-            # Manual Function Execution Loop (100% crash-proof)
-            while response.function_calls:
-                
-                # 1. Append the model's function request to the history stack
-                api_history.append(response.candidates[0].content)
-                
-                # 2. Execute the tools
-                function_responses = []
-                for call in response.function_calls:
-                    if call.name in TOOL_MAP:
-                        # Safely parse args 
-                        call_args = dict(call.args) if call.args else {}
-                        tool_result = TOOL_MAP[call.name](**call_args)
-                        
-                        function_responses.append(
-                            types.Part.from_function_response(
-                                name=call.name, 
-                                response={"result": tool_result}
-                            )
-                        )
-                
-                # 3. Append execution results back to history strictly as a 'user' role
-                api_history.append(types.Content(role="user", parts=function_responses))
-                
-                # 4. Request the final synthesis from Gemini
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=api_history,
-                    config=config
-                )
+            # The SDK completely automates calling the Python function for us!
+            response = chat.send_message(user_prompt)
             
         response_placeholder.markdown(response.text)
         st.session_state.messages.append({"role": "assistant", "content": response.text})
