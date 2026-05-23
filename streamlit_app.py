@@ -113,13 +113,29 @@ if user_prompt:
             )
                 
             with st.spinner("Stylist is consulting atmospheric records..."):
+                import time
                 
-                # Send initial payload directly to the model
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=api_history,
-                    config=config
-                )
+                # FIXED: Resilient helper function to gracefully survive 503 traffic spikes
+                def call_gemini_with_retry(history_payload):
+                    delay = 2
+                    for attempt in range(3):
+                        try:
+                            return client.models.generate_content(
+                                model="gemini-2.5-flash",
+                                contents=history_payload,
+                                config=config
+                            )
+                        except Exception as e:
+                            # If the server is busy, show a toast, wait, and try again
+                            if "503" in str(e) and attempt < 2:
+                                st.toast(f"⚠️ Google servers busy. Retrying in {delay}s... (Attempt {attempt+1}/3)")
+                                time.sleep(delay)
+                                delay *= 2  # Double the wait time next time
+                                continue
+                            raise e
+
+                # Send initial payload
+                response = call_gemini_with_retry(api_history)
                 
                 # Manual Loop that forces the tracking 'id'
                 while response.function_calls:
@@ -134,7 +150,6 @@ if user_prompt:
                             call_args = dict(call.args) if call.args else {}
                             tool_result = TOOL_MAP[call.name](**call_args)
                             
-                            # We safely pass call.id back to Google
                             kwargs = {
                                 "name": call.name, 
                                 "response": {"result": tool_result}
@@ -149,12 +164,8 @@ if user_prompt:
                     # 3. Append execution results back to history strictly as a 'user'
                     api_history.append(types.Content(role="user", parts=function_responses))
                     
-                    # 4. Request the final synthesis from Gemini
-                    response = client.models.generate_content(
-                        model="gemini-2.5-flash",
-                        contents=api_history,
-                        config=config
-                    )
+                    # 4. Request the final synthesis from Gemini using our retry engine
+                    response = call_gemini_with_retry(api_history)
                 
             response_placeholder.markdown(response.text)
             st.session_state.messages.append({"role": "assistant", "content": response.text})
