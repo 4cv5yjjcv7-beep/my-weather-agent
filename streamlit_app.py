@@ -1,5 +1,7 @@
 import streamlit as st
 import requests
+import time
+from datetime import datetime
 from google import genai
 from google.genai import types
 
@@ -8,12 +10,11 @@ from google.genai import types
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="AI Wardrobe Advisor", page_icon="🧥")
 st.title("🧥 Personal Wardrobe AI Agent")
-st.caption("Powered by Gemini 1.5 Flash & Manual Execution")
+st.caption("Powered by Gemini 2.5 Flash & NWS Forecasts")
 
-# Initialize Chat Message History
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi! Tell me where you are traveling, and I'll check the live weather to draft your custom clothing layout!"}
+        {"role": "assistant", "content": "Hi! Tell me your destination, your travel dates, and the occasion, and I'll pack your bags!"}
     ]
 
 for msg in st.session_state.messages:
@@ -23,13 +24,13 @@ for msg in st.session_state.messages:
 # ---------------------------------------------------------------------------
 # 2. Define the Agent Tools
 # ---------------------------------------------------------------------------
-def get_current_weather(city: str) -> str:
-    """Fetches the current temperature and weather conditions for a given US city."""
-    with st.status(f"🔧 Agent running NWS backend tool for '{city}'...", expanded=False) as status:
+# UPGRADE: We removed the 'days' limit. The tool now pulls the full 7-day calendar.
+def get_trip_weather(city: str) -> str:
+    """Fetches the 7-day weather forecast calendar for a given US city."""
+    with st.status(f"🔧 Agent pulling 7-day forecast for '{city}'...", expanded=False) as status:
         try:
             clean_city = city.split(",")[0].strip()
             
-            # 1. Geocoding (Open-Meteo is still the best free geocoder to get latitude/longitude)
             geo_url = "https://geocoding-api.open-meteo.com/v1/search"
             params = {"name": clean_city, "count": 1, "language": "en", "format": "json"}
             
@@ -38,44 +39,43 @@ def get_current_weather(city: str) -> str:
                 status.update(label=f"❌ Location '{clean_city}' not found", state="error")
                 return f"Could not find coordinates for {city}"
             
-            # NWS prefers coordinates rounded to 4 decimal places
             lat = round(float(geo_response.json()["results"][0]["latitude"]), 4)
             lon = round(float(geo_response.json()["results"][0]["longitude"]), 4)
             
-            # 2. National Weather Service (NWS) Points API
-            headers = {'User-Agent': 'MyWeatherAgentApp/1.0 (your-email@example.com)'}
+            headers = {'User-Agent': 'MyWeatherAgentApp/1.0'}
             points_url = f"https://api.weather.gov/points/{lat},{lon}"
             points_response = requests.get(points_url, headers=headers)
             
             if points_response.status_code != 200:
-                status.update(label="❌ NWS Data unavailable (US only)", state="error")
+                status.update(label="❌ NWS Data unavailable", state="error")
                 return f"Could not pull NWS weather for {city}. Is it outside the US?"
                 
             points_data = points_response.json()
-            forecast_url = points_data["properties"]["forecastHourly"]
-            
-            # 3. National Weather Service Hourly Forecast
+            forecast_url = points_data["properties"]["forecast"]
             forecast_response = requests.get(forecast_url, headers=headers).json()
             
-            # The 0th period is always the current, active hour
-            current_hour = forecast_response["properties"]["periods"][0]
+            periods = forecast_response["properties"]["periods"]
             
-            temp = current_hour["temperature"]
-            desc = current_hour["shortForecast"]
-
-            status.update(label=f"✅ NWS Data fetched: {temp}°F, {desc}", state="complete")
-            return f"Weather in {city}: {temp}°F, {desc}"
+            forecast_summary = []
+            for p in periods:
+                # UPGRADE: We explicitly attach the calendar date to the forecast so the AI can map it!
+                calendar_date = p['startTime'][:10]
+                forecast_summary.append(f"{p['name']} ({calendar_date}): {p['temperature']}°F, {p['shortForecast']}")
+                
+            result_string = f"7-Day Forecast for {city}:\n" + "\n".join(forecast_summary)
+            status.update(label=f"✅ 7-Day NWS Calendar fetched", state="complete")
+            return result_string
             
         except Exception as e:
             status.update(label="❌ Weather process crashed", state="error")
             return f"Weather lookup failed: {str(e)}"
 
-TOOL_MAP = {"get_current_weather": get_current_weather}
+TOOL_MAP = {"get_trip_weather": get_trip_weather}
 
 # ---------------------------------------------------------------------------
 # 3. Execution & Interactivity Loop
 # ---------------------------------------------------------------------------
-user_prompt = st.chat_input("Where are you going?")
+user_prompt = st.chat_input("E.g., I'm going to Miami next weekend for a beach wedding...")
 
 if user_prompt:
     st.session_state.messages.append({"role": "user", "content": user_prompt})
@@ -85,37 +85,39 @@ if user_prompt:
     try:
         client = genai.Client()
         
+        # UPGRADE: Tell the AI the current date so it understands "next weekend" or "tomorrow"
+        current_date = datetime.now().strftime("%A, %B %d, %Y")
+        
         config = types.GenerateContentConfig(
             system_instruction=(
-                "You are a luxury personal wardrobe stylist agent. You MUST check the weather first using get_current_weather "
-                "before finalizing your response. Provide an inspiring, structured clothing checklist based on the data."
+                f"Today is {current_date}. You are a luxury personal wardrobe stylist agent. "
+                "You MUST use the get_trip_weather tool to pull the 7-day forecast for the destination. "
+                "Filter the returned 7-day calendar data down to the specific dates or date range the user requested. "
+                "If their dates are beyond the 7-day forecast window, kindly inform them you can only see 7 days out. "
+                "Otherwise, analyze their occasion, the duration, and the specific weather for those dates to "
+                "provide an inspiring, day-by-day structured clothing and packing itinerary."
             ),
-            tools=[get_current_weather],
+            tools=[get_trip_weather],
             temperature=0.3
         )
 
         with st.chat_message("assistant"):
             response_placeholder = st.empty()
             
-            # Build API history
             api_history = []
             for msg in st.session_state.messages[:-1]:
-                if msg["role"] == "assistant" and "Hi! Tell me where" in msg["content"]:
+                if msg["role"] == "assistant" and "Hi! Tell me your destination" in msg["content"]:
                     continue
                 api_role = "model" if msg["role"] == "assistant" else "user"
                 api_history.append(
                     types.Content(role=api_role, parts=[types.Part.from_text(text=msg["content"])])
                 )
                 
-            # Append the new prompt
             api_history.append(
                 types.Content(role="user", parts=[types.Part.from_text(text=user_prompt)])
             )
                 
-            with st.spinner("Stylist is consulting atmospheric records..."):
-                import time
-                
-                # FIXED: Resilient helper function to gracefully survive 503 traffic spikes
+            with st.spinner("Stylist is mapping out your daily itinerary..."):
                 def call_gemini_with_retry(history_payload):
                     delay = 2
                     for attempt in range(3):
@@ -126,52 +128,37 @@ if user_prompt:
                                 config=config
                             )
                         except Exception as e:
-                            # If the server is busy, show a toast, wait, and try again
                             if "503" in str(e) and attempt < 2:
                                 st.toast(f"⚠️ Google servers busy. Retrying in {delay}s... (Attempt {attempt+1}/3)")
                                 time.sleep(delay)
-                                delay *= 2  # Double the wait time next time
+                                delay *= 2
                                 continue
                             raise e
 
-                # Send initial payload
                 response = call_gemini_with_retry(api_history)
                 
-                # Manual Loop that forces the tracking 'id'
                 while response.function_calls:
-                    
-                    # 1. Append the model's function request
                     api_history.append(response.candidates[0].content)
                     
-                    # 2. Execute the tools
                     function_responses = []
                     for call in response.function_calls:
                         if call.name in TOOL_MAP:
                             call_args = dict(call.args) if call.args else {}
                             tool_result = TOOL_MAP[call.name](**call_args)
                             
-                            kwargs = {
-                                "name": call.name, 
-                                "response": {"result": tool_result}
-                            }
+                            kwargs = {"name": call.name, "response": {"result": tool_result}}
                             if hasattr(call, "id") and call.id:
                                 kwargs["id"] = call.id
                                 
-                            function_responses.append(
-                                types.Part.from_function_response(**kwargs)
-                            )
+                            function_responses.append(types.Part.from_function_response(**kwargs))
                     
-                    # 3. Append execution results back to history strictly as a 'user'
                     api_history.append(types.Content(role="user", parts=function_responses))
-                    
-                    # 4. Request the final synthesis from Gemini using our retry engine
                     response = call_gemini_with_retry(api_history)
                 
             response_placeholder.markdown(response.text)
             st.session_state.messages.append({"role": "assistant", "content": response.text})
 
     except Exception as e:
-        # If the API crashes, this bypasses Streamlit's redaction filter to show us why!
         error_info = str(e)
         if hasattr(e, 'response_json') and e.response_json:
             error_info += f"\n\n**Raw Google Payload:**\n```json\n{e.response_json}\n```"
