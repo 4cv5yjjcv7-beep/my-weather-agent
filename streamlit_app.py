@@ -68,7 +68,7 @@ def get_trip_weather(city: str) -> str:
             status.update(label="❌ Weather process crashed", state="error")
             return f"Weather lookup failed: {str(e)}"
 
-TOOL_MAP = {"get_trip_weather": get_current_weather if "get_current_weather" in globals() else get_trip_weather}
+TOOL_MAP = {"get_trip_weather": get_trip_weather}
 
 # ---------------------------------------------------------------------------
 # 3. Execution & Interactivity Loop
@@ -148,9 +148,10 @@ if user_prompt:
                     
                     function_responses = []
                     for call in response.function_calls:
-                        # Fallback check to support either function name mapping
-                        target_func = TOOL_MAP.get(call.name) or get_trip_weather
-                        
+                        target_func = TOOL_MAP.get(call.name)
+                        if not target_func:
+                            continue # Skip if the AI hallucinates a tool name
+                            
                         call_args = dict(call.args) if call.args else {}
                         tool_result = target_func(**call_args)
                         
@@ -172,6 +173,7 @@ if user_prompt:
     except Exception as e:
         error_info = str(e)
         if hasattr(e, 'response_json') and e.response_json:
-            error_info += f"\n\n**Raw Google Payload:**\n```json\n{e.response_json}\n
-```"
+            # FIX: Dynamically building the backticks so it doesn't break the copy-paste box!
+            ticks = "`" * 3
+            error_info += f"\n\n**Raw Google Payload:**\n{ticks}json\n{e.response_json}\n{ticks}"
         st.error(f"### 🛑 Google API Crash\n{error_info}")
