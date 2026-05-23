@@ -24,7 +24,6 @@ for msg in st.session_state.messages:
 # ---------------------------------------------------------------------------
 # 2. Define the Agent Tools
 # ---------------------------------------------------------------------------
-# UPGRADE: We removed the 'days' limit. The tool now pulls the full 7-day calendar.
 def get_trip_weather(city: str) -> str:
     """Fetches the 7-day weather forecast calendar for a given US city."""
     with st.status(f"🔧 Agent pulling 7-day forecast for '{city}'...", expanded=False) as status:
@@ -58,7 +57,6 @@ def get_trip_weather(city: str) -> str:
             
             forecast_summary = []
             for p in periods:
-                # UPGRADE: We explicitly attach the calendar date to the forecast so the AI can map it!
                 calendar_date = p['startTime'][:10]
                 forecast_summary.append(f"{p['name']} ({calendar_date}): {p['temperature']}°F, {p['shortForecast']}")
                 
@@ -70,7 +68,7 @@ def get_trip_weather(city: str) -> str:
             status.update(label="❌ Weather process crashed", state="error")
             return f"Weather lookup failed: {str(e)}"
 
-TOOL_MAP = {"get_trip_weather": get_trip_weather}
+TOOL_MAP = {"get_trip_weather": get_current_weather if "get_current_weather" in globals() else get_trip_weather}
 
 # ---------------------------------------------------------------------------
 # 3. Execution & Interactivity Loop
@@ -84,8 +82,6 @@ if user_prompt:
 
     try:
         client = genai.Client()
-        
-        # UPGRADE: Tell the AI the current date so it understands "next weekend" or "tomorrow"
         current_date = datetime.now().strftime("%A, %B %d, %Y")
         
         config = types.GenerateContentConfig(
@@ -104,6 +100,7 @@ if user_prompt:
         with st.chat_message("assistant"):
             response_placeholder = st.empty()
             
+            # Rebuild API history securely
             api_history = []
             for msg in st.session_state.messages[:-1]:
                 if msg["role"] == "assistant" and "Hi! Tell me your destination" in msg["content"]:
@@ -118,10 +115,11 @@ if user_prompt:
             )
                 
             with st.spinner("Stylist is mapping out your daily itinerary..."):
-                # UPDATED: Handles both 503 server overloads AND 429 rate limits automatically
+                
+                # Resilient API requester handling rate-limits and server spikes
                 def call_gemini_with_retry(history_payload):
                     delay = 2
-                    for attempt in range(4): # Increased to 4 attempts to allow room for a rate-limit cooldown
+                    for attempt in range(4):
                         try:
                             return client.models.generate_content(
                                 model="gemini-2.5-flash",
@@ -130,46 +128,50 @@ if user_prompt:
                             )
                         except Exception as e:
                             err_msg = str(e)
-                            
-                            # Case A: If we hit a 429 Rate Limit, pause for 14 seconds and try again
                             if "429" in err_msg and attempt < 3:
                                 st.toast("⏳ Rate limit hit! Pausing 14s for free-tier cooldown...")
                                 time.sleep(14)
                                 continue
-                                
-                            # Case B: If we hit a 503 Traffic Spike, use exponential backoff
                             if "503" in err_msg and attempt < 3:
                                 st.toast(f"⚠️ Google servers busy. Retrying in {delay}s... (Attempt {attempt+1}/4)")
                                 time.sleep(delay)
                                 delay *= 2
                                 continue
-                                
-                            # If it's an unrelated error, raise it immediately
                             raise e
+
+                # Step 1: Initial call explicitly assigned to 'response'
+                response = call_gemini_with_retry(api_history)
                 
+                # Step 2: Loop through tool requests securely
                 while response.function_calls:
                     api_history.append(response.candidates[0].content)
                     
                     function_responses = []
                     for call in response.function_calls:
-                        if call.name in TOOL_MAP:
-                            call_args = dict(call.args) if call.args else {}
-                            tool_result = TOOL_MAP[call.name](**call_args)
+                        # Fallback check to support either function name mapping
+                        target_func = TOOL_MAP.get(call.name) or get_trip_weather
+                        
+                        call_args = dict(call.args) if call.args else {}
+                        tool_result = target_func(**call_args)
+                        
+                        kwargs = {"name": call.name, "response": {"result": tool_result}}
+                        if hasattr(call, "id") and call.id:
+                            kwargs["id"] = call.id
                             
-                            kwargs = {"name": call.name, "response": {"result": tool_result}}
-                            if hasattr(call, "id") and call.id:
-                                kwargs["id"] = call.id
-                                
-                            function_responses.append(types.Part.from_function_response(**kwargs))
+                        function_responses.append(types.Part.from_function_response(**kwargs))
                     
                     api_history.append(types.Content(role="user", parts=function_responses))
+                    
+                    # Overwrite 'response' with the next model turn
                     response = call_gemini_with_retry(api_history)
                 
+            # Step 3: Render final text output safely
             response_placeholder.markdown(response.text)
             st.session_state.messages.append({"role": "assistant", "content": response.text})
 
     except Exception as e:
         error_info = str(e)
         if hasattr(e, 'response_json') and e.response_json:
-            error_info += f"\n\n**Raw Google Payload:**\n```json\n{e.response_json}\n```"
+            error_info += f"\n\n**Raw Google Payload:**\n```json\n{e.response_json}\n
+```"
         st.error(f"### 🛑 Google API Crash\n{error_info}")
