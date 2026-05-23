@@ -118,9 +118,10 @@ if user_prompt:
             )
                 
             with st.spinner("Stylist is mapping out your daily itinerary..."):
+                # UPDATED: Handles both 503 server overloads AND 429 rate limits automatically
                 def call_gemini_with_retry(history_payload):
                     delay = 2
-                    for attempt in range(3):
+                    for attempt in range(4): # Increased to 4 attempts to allow room for a rate-limit cooldown
                         try:
                             return client.models.generate_content(
                                 model="gemini-2.5-flash",
@@ -128,14 +129,23 @@ if user_prompt:
                                 config=config
                             )
                         except Exception as e:
-                            if "503" in str(e) and attempt < 2:
-                                st.toast(f"⚠️ Google servers busy. Retrying in {delay}s... (Attempt {attempt+1}/3)")
+                            err_msg = str(e)
+                            
+                            # Case A: If we hit a 429 Rate Limit, pause for 14 seconds and try again
+                            if "429" in err_msg and attempt < 3:
+                                st.toast("⏳ Rate limit hit! Pausing 14s for free-tier cooldown...")
+                                time.sleep(14)
+                                continue
+                                
+                            # Case B: If we hit a 503 Traffic Spike, use exponential backoff
+                            if "503" in err_msg and attempt < 3:
+                                st.toast(f"⚠️ Google servers busy. Retrying in {delay}s... (Attempt {attempt+1}/4)")
                                 time.sleep(delay)
                                 delay *= 2
                                 continue
+                                
+                            # If it's an unrelated error, raise it immediately
                             raise e
-
-                response = call_gemini_with_retry(api_history)
                 
                 while response.function_calls:
                     api_history.append(response.candidates[0].content)
