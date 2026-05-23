@@ -122,7 +122,7 @@ if user_prompt:
                     for attempt in range(4):
                         try:
                             return client.models.generate_content(
-                                model="gemini-2.5-flash",
+                                model="gemini-2.5-flash-lite",
                                 contents=history_payload,
                                 config=config
                             )
